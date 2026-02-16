@@ -1,73 +1,74 @@
-import aiomysql
+import aiosqlite
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
+DB_PATH = "salon_db.sqlite"
+
 async def get_db_connection():
-    return await aiomysql.connect(
-        host=os.getenv("DB_HOST"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        db=os.getenv("DB_NAME"),
-        autocommit=True
-    )
+    return await aiosqlite.connect(DB_PATH)
 
 async def init_db():
-    conn = await get_db_connection()
-    async with conn.cursor() as cur:
-        await cur.execute("""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS services (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                name VARCHAR(255),
-                price INT
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                price INTEGER NOT NULL
             )
-        """)
-        await cur.execute("""
+        """
+        )
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS appointments (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id BIGINT,
-                user_name VARCHAR(255),
-                service_id INT,
-                status VARCHAR(50) DEFAULT 'active',
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                user_name TEXT NOT NULL,
+                service_id INTEGER NOT NULL,
+                status TEXT DEFAULT 'active',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (service_id) REFERENCES services(id)
             )
-        """)
-        await cur.execute("SELECT COUNT(*) FROM services")
-        if (await cur.fetchone())[0] == 0:
-            services = [('Стрижка', 1500), ('Маникюр', 2000), ('Окрашивание', 5000)]
-            await cur.executemany("INSERT INTO services (name, price) VALUES (%s, %s)", services)
-    conn.close()
+        """
+        )
+        async with db.execute("SELECT COUNT(*) as count FROM services") as cursor:
+            row = await cursor.fetchone()
+            if row['count'] == 0:
+                services = [('Стрижка', 1500), ('Маникюр', 2000), ('Окрашивание', 5000)]
+                await db.executemany("INSERT INTO services (name, price) VALUES (?, ?)", services)
+        await db.commit()
 
 async def get_services():
-    conn = await get_db_connection()
-    async with conn.cursor(aiomysql.DictCursor) as cur:
-        await cur.execute("SELECT * FROM services")
-        return await cur.fetchall()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM services") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
 async def create_appointment(user_id, user_name, service_id):
-    conn = await get_db_connection()
-    async with conn.cursor() as cur:
-        await cur.execute(
-            "INSERT INTO appointments (user_id, user_name, service_id) VALUES (%s, %s, %s)",
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO appointments (user_id, user_name, service_id) VALUES (?, ?, ?)",
             (user_id, user_name, service_id)
         )
-        return cur.lastrowid
+        last_id = cursor.lastrowid
+        await db.commit()
+        return last_id
 
 async def cancel_appointment(appointment_id):
-    conn = await get_db_connection()
-    async with conn.cursor() as cur:
-        await cur.execute("UPDATE appointments SET status = 'cancelled' WHERE id = %s", (appointment_id,))
-    conn.close()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE appointments SET status = 'cancelled' WHERE id = ?", (appointment_id,))
+        await db.commit()
 
 async def get_appointment_info(appointment_id):
-    conn = await get_db_connection()
-    async with conn.cursor(aiomysql.DictCursor) as cur:
-        await cur.execute("""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
             SELECT a.*, s.name as service_name 
             FROM appointments a 
             JOIN services s ON a.service_id = s.id 
-            WHERE a.id = %s
-        """, (appointment_id,))
-        return await cur.fetchone()
+            WHERE a.id = ?
+        """, (appointment_id,)) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
